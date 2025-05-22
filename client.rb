@@ -4,64 +4,67 @@ require 'socket'
 require 'openssl'
 require 'colorize'
 require 'optparse'
+require 'logger'
 
+LOGGER = Logger.new(STDOUT)
 ARGV << '-h' if ARGV.empty?
 
 options = {}
 OptionParser.new do |opts|
-  opts.banner = "TLS Tunnel Client\n\n".bold + 'Usage: ./client.rb [options]'
-  opts.on('-v', '--verbose', 'Run verbosely') do |v|
+  opts.banner = "htun client\n\n".bold + 'usage: ./client.rb [options]'
+  opts.on('-v', '--verbose', 'run verbosely') do |v|
     options[:verbose] = v
   end
 
-  opts.on('-h', '--help', 'Prints help') do
+  opts.on('-h', '--help', 'prints help') do
     puts opts
     exit
   end
 
   opts.on('-aADDR', '--address=ADDR',
-          'TLS Tunnel Server address, example: ./client.rb --address example.com') do |addr|
+          'htun server address, example: ./client.rb --address example.com') do |addr|
     options[:addr] = addr
   end
 
   opts.on('-fKEY', '--auth-keyfile=KEY',
-          'TLS Tunnel Server authorization key file, example: ./client.rb --auth-keyfile auth_key.txt') do |auth_key|
+          'htun authorization key file, example: ./client.rb --auth-keyfile auth.key') do |auth_key|
     options[:auth_key] = auth_key
   end
 
   opts.on('-pPORT', '--port=PORT',
-          'Local port for listening, example: ./client.rb --address example.com --port 8080') do |port|
+          'local port for listening, example: ./client.rb --address example.com --port 8080') do |port|
     options[:port] = port
   end
 
-  opts.on('-sSNI', '--sni=SNI', 'TLS SNI extension spoof, default is [ example.com ] (optional)') do |sni|
+  opts.on('-sSNI', '--sni=SNI', 'sni extension spoof, default is [ example.com ] (optional)') do |sni|
     options[:sni] = sni
   end
 end.parse!
 
 if !options[:addr] || !options[:port] || !options[:auth_key]
-  puts "Please include the server address, authorization key and local port for listening!\nExample: ./client.rb --address/-a example.com --port/-p 8080 --auth-keyfile/-f auth_key.txt".red
-  exit
+  LOGGER.error "please include the server address, authorization key and local port for listening!".red
+  LOGGER.info "example: ./client.rb --address/-a example.com --port/-p 8080 --auth-keyfile/-f auth_key.txt".gray
+  exit 1
 end
 
 unless File.exist?(options[:auth_key])
-  puts 'Authentication key file not found!'.red
-  exit
+  LOGGER.error 'authentication key file not found!'.red
+  exit 1
 end
 
 PROXY_PORT  = options[:port]
 SERVER_HOST = options[:addr]
-SERVER_PORT = 443 # Don't change this, because the server we are connecting to is supposed to immitate the real https connection
-SNI_HOST	= options[:sni] || 'example.com' # SNI SPOOFING
-TTL	= 10 # 10 SEC
-MAX_BUFFER = 1024 * 640 # 640KB
-AUTH_KEY	= File.read(options[:auth_key]).chomp
+SERVER_PORT = 443                            # don't change this, because the server we are connecting to is supposed to immitate the real https connection
+SNI_HOST    = options[:sni] || 'example.com' # sni spoofing
+TTL         = 10                             # 10 seconds
+MAX_BUFFER  = 1024 * 640                     # 640KB
+AUTH_KEY    = File.read(options[:auth_key]).chomp
 
 def connect(host, port)
   begin
     socket = TCPSocket.new(host, port)
     return nil unless socket
-
+    
     sslContext = OpenSSL::SSL::SSLContext.new
     sslContext.min_version = OpenSSL::SSL::TLS1_3_VERSION
     ssl = OpenSSL::SSL::SSLSocket.new(socket, sslContext)
@@ -69,7 +72,7 @@ def connect(host, port)
     ssl.sync_close = true
     ssl.connect
   rescue StandardError
-    puts '[WARNING] TLS Tunnel Server seems to be down'.red
+    LOGGER.error "server seems to be down".red
     return nil
   end
   ssl
@@ -87,7 +90,7 @@ def is_alive?(ssl, payload)
 end
 
 proxy = TCPServer.new(PROXY_PORT)
-puts "[#{Time.now}] Listening on #{PROXY_PORT}".bold
+LOGGER.info "listening on #{PROXY_PORT}".bold
 
 loop do
   connection = proxy.accept
@@ -102,10 +105,10 @@ loop do
       Thread.exit unless ssl
       request_host, request_port = request_head.first.split(' ')[1].split(':')
       if header = is_alive?(ssl, request)
-        puts "[CONNECT] #{request_host}:#{request_port}".green if options[:verbose]
+        LOGGER.info "#{request_method.downcase} #{request_host}:#{request_port}".green if options[:verbose]
         connection.puts(header)
       else
-        puts "[CONNECT] #{request_host}:#{request_port} is unavailable!".red if options[:verbose]
+        LOGGER.info "#{request_method.downcase} #{request_host}:#{request_port} is unavailable!".red if options[:verbose]
         ssl.close
         connection.close
         Thread.exit
@@ -123,14 +126,13 @@ loop do
           end
         end
       rescue StandardError
-        puts "[INFO] Closing connection with #{request_host}:#{request_port}".red if options[:verbose]
+        LOGGER.error "closing connection with #{request_host}:#{request_port}".red if options[:verbose]
         ssl.close if ssl
         connection.close if connection
         Thread.exit
       end
 
     else
-      # GET POST PUT POST PATCH DELETE ETC#
       ssl = connect(SERVER_HOST, SERVER_PORT)
       Thread.exit unless ssl
 
@@ -145,9 +147,9 @@ loop do
       begin
         response = ssl.readpartial(MAX_BUFFER)
         connection.puts(response)
-        puts "[NON-CONNECT] #{request_host}:#{request_port}".green if options[:verbose]
+        LOGGER.info "#{request_method.downcase} #{request_host}:#{request_port}".green if options[:verbose]
       rescue StandardError
-        puts "[NON-CONNECT] #{request_host}:#{request_port}".red if options[:verbose]
+        LOGGER.error "#{request_method.downcase} #{request_host}:#{request_port}".red if options[:verbose]
       ensure
         connection.close
       end
